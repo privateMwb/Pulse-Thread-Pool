@@ -80,6 +80,11 @@ PulseThreadPool/
 ├── src/
 │   └── ThreadPool.cpp
 │
+├── build/
+│   ├── test
+│   ├── benchmarks
+│   └── examples
+│
 ├── examples/
 │   └── examples.cpp
 │
@@ -89,7 +94,8 @@ PulseThreadPool/
 ├── benchmarks/
 │   └── benchmark.cpp
 │
-└── README.md
+├── README.md
+└── LICENSE
 ```
 
 ---
