@@ -95,25 +95,25 @@ PulseThreadPool/
 
 # Build
 
-## Example
+## Compile Tests
 
 ```bash
-g++ -std=c++23 examples/example.cpp -Iinclude -o example
-./example
+g++ -std=c++23 -pthread src/ThreadPool.cpp tests/test.cpp -Iinclude -o test
+./test
 ```
 
-## Benchmark
+## Compile Benchmarks
 
 ```bash
-g++ -std=c++23 benchmarks/benchmark.cpp -Iinclude -o benchmark
+g++ -std=c++23 -pthread src/ThreadPool.cpp benchmarks/benchmark.cpp -Iinclude -o benchmark
 ./benchmark
 ```
 
-## Test
+## Compile Examples
 
 ```bash
-g++ -std=c++23 tests/test.cpp -Iinclude -o test
-./test
+g++ -std=c++23 -pthread src/ThreadPool.cpp examples/examples.cpp -Iinclude -o examples
+./examples
 ```
 
 ---
