@@ -15,88 +15,117 @@
 
 class ThreadPool {
 public:
-    // Types 
+	// Shutdown Mode
 	enum class ShutdownMode {
 		FinishTasks,
 		DiscardTasks
 	};
 
 private:
-    // Helpers
-	struct ActiveTaskGuard {
+	// Move-Only Task Wrapper
+	struct MoveOnlyTask {
+		struct Base {
+			virtual void call() = 0;
+			virtual ~Base()    = default;
+		};
+
+		template<typename F>
+		struct Impl : Base {
+			F fn;
+			explicit Impl(F&& f) : fn(std::move(f)) {}
+			void call() override { fn(); }
+		};
+
+		std::unique_ptr<Base> ptr;
+
+		MoveOnlyTask() : ptr(nullptr) {}
+
+		template<typename F>
+		MoveOnlyTask(F&& f)
+			: ptr(std::make_unique<Impl<std::decay_t<F>>>(std::forward<F>(f))) {}
+
+		MoveOnlyTask(MoveOnlyTask&&)            = default;
+		MoveOnlyTask& operator=(MoveOnlyTask&&) = default;
+
+		MoveOnlyTask(const MoveOnlyTask&)            = delete;
+		MoveOnlyTask& operator=(const MoveOnlyTask&) = delete;
+
+		explicit operator bool() const { return ptr != nullptr; }
+		void operator()() { if (ptr) ptr->call(); }
+	};
+
+	// Active Task Guard
+	struct [[nodiscard]] ActiveTaskGuard {
 	private:
 		std::atomic<std::size_t>& counter;
 
 	public:
-		ActiveTaskGuard(std::atomic<std::size_t>& c) :
-			counter(c) {
-			++counter;
+		explicit ActiveTaskGuard(std::atomic<std::size_t>& c) : counter(c) {
+			counter.fetch_add(1, std::memory_order_relaxed);
 		}
 
 		~ActiveTaskGuard() {
-			--counter;
+			counter.fetch_sub(1, std::memory_order_relaxed);
 		}
-		
-		ActiveTaskGuard(const ActiveTaskGuard&) = delete;
+
+		ActiveTaskGuard(const ActiveTaskGuard&)            = delete;
 		ActiveTaskGuard& operator=(const ActiveTaskGuard&) = delete;
-		
-		ActiveTaskGuard(ActiveTaskGuard&&) = delete;
-		ActiveTaskGuard& operator=(ActiveTaskGuard&&) = delete;
+
+		ActiveTaskGuard(ActiveTaskGuard&&)                 = delete;
+		ActiveTaskGuard& operator=(ActiveTaskGuard&&)      = delete;
 	};
-	
-	// Workers Thread
+
+	// Worker Threads
 	std::vector<std::thread> workers;
 
 	// Task Queue
-	std::queue<std::function<void()>> taskQueue;
+	std::queue<MoveOnlyTask> taskQueue;
 
 	// Synchronization
-	mutable std::mutex queueMutex;
+	mutable std::mutex      queueMutex;
 	std::condition_variable condition;
 
 	// Control Flags
-	bool stopFlag;
-	bool paused;
-	ShutdownMode shutdownMode;
+	std::atomic<bool> stopFlag;
+	std::atomic<bool> paused;
+	ShutdownMode      shutdownMode;
 
 	// Statistics
 	std::atomic<std::size_t> activeTasks;
 	std::atomic<std::size_t> exceptionCounter;
 
 public:
-	// Lifecycle
+	// Constructors & Destructor
 	explicit ThreadPool(std::size_t threadCount);
 	~ThreadPool();
 
-	ThreadPool(const ThreadPool&) = delete;
+	ThreadPool(const ThreadPool&)            = delete;
 	ThreadPool& operator=(const ThreadPool&) = delete;
 
-	ThreadPool(ThreadPool&&) = delete;
-	ThreadPool& operator=(ThreadPool&&) = delete;
+	ThreadPool(ThreadPool&&)                 = delete;
+	ThreadPool& operator=(ThreadPool&&)      = delete;
 
-	// Control API
-	void pause();
-	void resume();
-	void shutdown(ShutdownMode mode);
+	// Control
+	void pause()  noexcept;
+	void resume() noexcept;
+	void shutdown(ShutdownMode mode = ShutdownMode::FinishTasks) noexcept;
 
 	// Task Submission
 	template<typename F, typename... Args>
-	auto enqueue(F&& task, Args&&... args)
-	-> std::future<std::invoke_result_t<std::decay_t<F>, Args...>>;
+	[[nodiscard]] auto enqueue(F&& task, Args&&... args)
+	-> std::future<std::invoke_result_t<std::decay_t<F>, std::decay_t<Args>...>>;
 
-	// Task Execution
 	template<typename F>
 	void execute(F&& task);
 
-	// Statistics
-	std::size_t activeTaskCount() const noexcept;
-	std::size_t queuedTasks() const noexcept;
-	std::size_t threadCount() const noexcept;
-	std::size_t exceptionCount() const noexcept;
+	// Introspection
+	[[nodiscard]] std::size_t activeTaskCount()  const noexcept;
+	[[nodiscard]] std::size_t queuedTasks()      const noexcept;
+	[[nodiscard]] std::size_t threadCount()      const noexcept;
+	[[nodiscard]] std::size_t exceptionCount()   const noexcept;
 
-	// State
-	bool isPaused() const noexcept;
-	bool isStopped() const noexcept;
+	[[nodiscard]] bool isPaused()  const noexcept;
+	[[nodiscard]] bool isStopped() const noexcept;
 };
 
 #include "ThreadPool.tpp"

@@ -1,110 +1,92 @@
 #include "ThreadPool.h"
 
-#include <thread>
-#include <functional>
-#include <mutex>
-#include <condition_variable>
-#include <queue>
-#include <atomic>
-#include <utility>
-#include <stdexcept>
+// Constructors & Destructor
+ThreadPool::ThreadPool(std::size_t threadCount)
+    : stopFlag(false)
+    , paused(false)
+    , shutdownMode(ShutdownMode::FinishTasks)
+    , activeTasks(0)
+    , exceptionCounter(0)
+{
+    workers.reserve(threadCount);
 
-// Lifecycle
-ThreadPool::ThreadPool(std::size_t threadCount) :
-	stopFlag(false),
-	paused(false),
-	shutdownMode(ShutdownMode::FinishTasks),
-	activeTasks(0),
-	exceptionCounter(0) {
-	for(std::size_t i = 0; i < threadCount; ++i) {
-		workers.emplace_back([this] {
-			while(true) {
-				std::function<void()> task;
+    for (std::size_t i = 0; i < threadCount; ++i) {
+        workers.emplace_back([this] {
+            while (true) {
+                MoveOnlyTask task;
 
-				{
-					std::unique_lock<std::mutex> lock(queueMutex);
+                {
+                    std::unique_lock<std::mutex> lock(queueMutex);
 
-					condition.wait(lock, [this] {
-						return stopFlag || (!paused && !taskQueue.empty());
-					});
+                    condition.wait(lock, [this] {
+                        return stopFlag.load(std::memory_order_relaxed)
+                            || (!paused.load(std::memory_order_relaxed)
+                                && !taskQueue.empty());
+                    });
 
-					if(stopFlag) {
-						if(shutdownMode == ShutdownMode::DiscardTasks) {
-							return;
-						}
+                    if (stopFlag.load(std::memory_order_relaxed)) {
+                        if (shutdownMode == ShutdownMode::DiscardTasks)
+                            return;
 
-						if(shutdownMode == ShutdownMode::FinishTasks
-						        && taskQueue.empty()) {
-							return;
-						}
-					}
+                        if (taskQueue.empty())
+                            return;
+                    }
 
-					if(taskQueue.empty()) {
-						continue;
-					}
+                    task = std::move(taskQueue.front());
+                    taskQueue.pop();
+                }
 
-					task = std::move(taskQueue.front());
-					taskQueue.pop();
-				}
-				
-				ActiveTaskGuard guard(activeTasks);
-				
-				try {
-				    task();
-				} catch(...) {
-				    ++exceptionCounter;
-				}
-			}
-		});
-	}
+                ActiveTaskGuard guard(activeTasks);
+
+                try {
+                    task();
+                } catch (...) {
+                    exceptionCounter.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+        });
+    }
 }
 
 ThreadPool::~ThreadPool() {
-	shutdown(shutdownMode);
+    shutdown(shutdownMode);
 }
 
-// Control API
-void ThreadPool::pause() {
-	std::unique_lock<std::mutex> lock(queueMutex);
-
-	paused = true;
+// Control
+void ThreadPool::pause() noexcept {
+    paused.store(true, std::memory_order_relaxed);
 }
 
-void ThreadPool::resume() {
-	{
-	    std::unique_lock<std::mutex> lock(queueMutex);
-	    
-	    paused = false;
-	}
-	
-	condition.notify_all();
+void ThreadPool::resume() noexcept {
+    paused.store(false, std::memory_order_relaxed);
+    condition.notify_all();
 }
 
-void ThreadPool::shutdown(ShutdownMode mode) {
-	{
-		std::unique_lock<std::mutex> lock(queueMutex);
+void ThreadPool::shutdown(ShutdownMode mode) noexcept {
+    {
+        std::lock_guard<std::mutex> lock(queueMutex);
 
-		shutdownMode = mode;
-		stopFlag = true;
-	}
+        if (stopFlag.load(std::memory_order_relaxed))
+            return;
 
-	condition.notify_all();
+        shutdownMode = mode;
+        stopFlag.store(true, std::memory_order_relaxed);
+    }
 
-	for(std::thread& worker : workers) {
-		if(worker.joinable()) {
-		    worker.join();
-		}
-	}
+    condition.notify_all();
+
+    for (std::thread& worker : workers)
+        if (worker.joinable())
+            worker.join();
 }
 
-// Statistics 
+// Introspection
 std::size_t ThreadPool::activeTaskCount() const noexcept {
-    return activeTasks.load();
+    return activeTasks.load(std::memory_order_relaxed);
 }
 
 std::size_t ThreadPool::queuedTasks() const noexcept {
     std::lock_guard<std::mutex> lock(queueMutex);
-    
     return taskQueue.size();
 }
 
@@ -113,21 +95,14 @@ std::size_t ThreadPool::threadCount() const noexcept {
 }
 
 std::size_t ThreadPool::exceptionCount() const noexcept {
-    return exceptionCounter.load();
+    return exceptionCounter.load(std::memory_order_relaxed);
 }
 
 // State
 bool ThreadPool::isPaused() const noexcept {
-    std::lock_guard<std::mutex> lock(queueMutex);
-    
-    return paused;
+    return paused.load(std::memory_order_relaxed);
 }
 
 bool ThreadPool::isStopped() const noexcept {
-    std::lock_guard<std::mutex> lock(queueMutex);
-    
-    return stopFlag;
+    return stopFlag.load(std::memory_order_relaxed);
 }
-
-
-
